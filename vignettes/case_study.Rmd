@@ -1,0 +1,588 @@
+---
+title: "Case Study: Multi-Level Analysis of Treatment Response"
+author: "Kai Guo"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+vignette: >
+  %\VignetteIndexEntry{Case Study: Multi-Level Analysis of Treatment Response}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+## Introduction
+
+This case study demonstrates a complete funDE analysis workflow using the example dataset. We'll perform multi-level differential expression analysis to understand treatment response mechanisms, moving from individual genes to biological pathways and gene families.
+
+## Study Design and Objectives
+
+### Research Question
+How does treatment affect gene expression at multiple functional levels, and what biological processes are coordinately regulated?
+
+### Analysis Strategy
+1. **Gene-level analysis**: Identify individual differentially expressed genes
+2. **Pathway analysis**: Understand affected biological processes
+3. **Gene family analysis**: Detect coordinated regulation within families
+4. **Enrichment analysis**: Validate and extend pathway findings
+5. **Integration**: Combine evidence across levels for robust conclusions
+6. **Visualization**: Create publication-ready figures
+
+```{r}
+library(funDE)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+
+# Load all required data
+data(example_counts)
+data(example_metadata)
+data(hallmark_pathways)
+data(hgnc_families)
+
+# Examine the experimental design
+cat("Experimental Design Summary:\n")
+print(table(example_metadata$condition, example_metadata$batch))
+
+cat("\nSample Information:\n")
+print(example_metadata)
+```
+
+## Step 1: Gene-Level Analysis
+
+### Primary Differential Expression Analysis
+
+```{r}
+# Perform comprehensive gene-level analysis
+gene_results <- analyze_genes(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ batch + condition,  # Include batch in design
+  contrast = c("condition", "treated", "control"),
+  method = "DESeq2",
+  alpha = 0.05,
+  lfc_threshold = 0
+)
+
+print(gene_results)
+summary(gene_results)
+```
+
+### Gene-Level Results Exploration
+
+```{r}
+# Extract significant genes
+sig_genes <- gene_results$results %>%
+  filter(padj < 0.05) %>%
+  arrange(padj)
+
+cat("Significant genes found:", nrow(sig_genes), "\n")
+
+# Top upregulated and downregulated genes
+top_up <- sig_genes %>%
+  filter(log2FoldChange > 0) %>%
+  head(10)
+
+top_down <- sig_genes %>%
+  filter(log2FoldChange < 0) %>%
+  head(10)
+
+cat("\nTop upregulated genes:\n")
+print(top_up[, c("gene", "log2FoldChange", "padj")])
+
+cat("\nTop downregulated genes:\n")
+print(top_down[, c("gene", "log2FoldChange", "padj")])
+```
+
+### Gene-Level Visualization
+
+```{r fig.width=10, fig.height=8}
+# Create volcano plot
+volcano_data <- gene_results$results %>%
+  mutate(
+    neg_log10_padj = -log10(padj),
+    significance = case_when(
+      padj < 0.01 & abs(log2FoldChange) > 1 ~ "Highly Significant",
+      padj < 0.05 & abs(log2FoldChange) > 0.5 ~ "Significant", 
+      padj < 0.05 ~ "Weakly Significant",
+      TRUE ~ "Not Significant"
+    )
+  )
+
+p1 <- ggplot(volcano_data, aes(x = log2FoldChange, y = neg_log10_padj, color = significance)) +
+  geom_point(alpha = 0.6, size = 1.2) +
+  scale_color_manual(values = c(
+    "Highly Significant" = "red",
+    "Significant" = "orange", 
+    "Weakly Significant" = "lightblue",
+    "Not Significant" = "grey"
+  )) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", alpha = 0.5) +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", alpha = 0.5) +
+  labs(
+    title = "Gene-Level Volcano Plot",
+    x = "Log2 Fold Change (Treated vs Control)",
+    y = "-log10(Adjusted P-value)",
+    color = "Significance"
+  ) +
+  theme_minimal()
+
+print(p1)
+```
+
+## Step 2: Pathway Analysis
+
+### Pathway-Level Differential Expression
+
+```{r}
+# Perform pathway analysis using multiple scoring methods
+pathway_results_gsva <- analyze_pathways(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ batch + condition,
+  contrast = c("condition", "treated", "control"),
+  pathways = hallmark_pathways,
+  scoring_method = "mean",  # Using mean for reliability with example data
+  transform_method = "log2"
+)
+
+print(pathway_results_gsva)
+```
+
+### Pathway Results Analysis
+
+```{r}
+# Examine pathway results
+pathway_sig <- pathway_results_gsva$results %>%
+  filter(pvalue < 0.1) %>%  # Relaxed threshold for demonstration
+  arrange(pvalue)
+
+cat("Pathways with p < 0.1:", nrow(pathway_sig), "\n")
+
+if (nrow(pathway_sig) > 0) {
+  cat("\nTop affected pathways:\n")
+  print(pathway_sig[, c("pathway", "n_genes", "log2FoldChange", "pvalue")])
+}
+
+# Examine all pathways ranked by effect size
+pathway_effects <- pathway_results_gsva$results %>%
+  arrange(desc(abs(log2FoldChange))) %>%
+  head(10)
+
+cat("\nPathways with largest effect sizes:\n")
+print(pathway_effects[, c("pathway", "log2FoldChange", "pvalue")])
+```
+
+### Pathway Visualization
+
+```{r fig.width=12, fig.height=8}
+# Create pathway heatmap
+p2 <- plot_pathway_heatmap(
+  pathway_results_gsva,
+  top_n = 15,
+  annotation_cols = c("condition", "batch"),
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  color_scheme = "RdBu"
+)
+
+# Pathway volcano plot
+pathway_volcano_data <- pathway_results_gsva$results %>%
+  mutate(
+    neg_log10_pval = -log10(pvalue),
+    label = ifelse(pvalue < 0.1, 
+                   stringr::str_wrap(gsub("HALLMARK_", "", pathway), 20), 
+                   "")
+  )
+
+p3 <- ggplot(pathway_volcano_data, aes(x = log2FoldChange, y = neg_log10_pval)) +
+  geom_point(aes(color = pvalue < 0.1), alpha = 0.7, size = 2) +
+  geom_text(aes(label = label), size = 3, hjust = 0, vjust = 0, 
+            check_overlap = TRUE, nudge_x = 0.01) +
+  scale_color_manual(values = c("FALSE" = "grey", "TRUE" = "red")) +
+  geom_hline(yintercept = -log10(0.1), linetype = "dashed", alpha = 0.5) +
+  labs(
+    title = "Pathway-Level Analysis",
+    x = "Log2 Fold Change",
+    y = "-log10(P-value)",
+    color = "P < 0.1"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+print(p3)
+```
+
+## Step 3: Gene Family Analysis
+
+### Family-Level Differential Expression
+
+```{r}
+# Perform gene family analysis
+family_results <- analyze_families(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ batch + condition,
+  contrast = c("condition", "treated", "control"),
+  families = hgnc_families,
+  aggregation_method = "mean",
+  min_family_size = 3
+)
+
+print(family_results)
+```
+
+### Family Results Analysis
+
+```{r}
+# Examine family results
+family_sig <- family_results$results %>%
+  filter(pvalue < 0.1) %>%
+  arrange(pvalue)
+
+cat("Gene families with p < 0.1:", nrow(family_sig), "\n")
+
+if (nrow(family_sig) > 0) {
+  cat("\nTop affected gene families:\n")
+  print(family_sig[, c("family", "n_genes", "log2FoldChange", "pvalue")])
+}
+
+# Look at largest effects
+family_effects <- family_results$results %>%
+  arrange(desc(abs(log2FoldChange))) %>%
+  head(8)
+
+cat("\nGene families with largest effect sizes:\n")
+print(family_effects[, c("family", "n_genes", "log2FoldChange", "pvalue")])
+```
+
+## Step 4: Enrichment Analysis
+
+### Gene Set Enrichment Testing
+
+```{r}
+# Perform enrichment analysis using significant genes
+if (nrow(sig_genes) >= 10) {
+  enrichment_results <- test_enrichment(
+    genes = sig_genes$gene,
+    universe = gene_results$results$gene,
+    gene_sets = hallmark_pathways,
+    method = "hypergeometric",
+    min_set_size = 5
+  )
+  
+  cat("Enrichment analysis completed\n")
+  cat("Pathways tested:", nrow(enrichment_results), "\n")
+  
+  # Show top enriched pathways
+  top_enriched <- enrichment_results %>%
+    filter(padj < 0.1) %>%
+    head(10)
+  
+  if (nrow(top_enriched) > 0) {
+    cat("\nTop enriched pathways:\n")
+    print(top_enriched[, c("gene_set", "overlap", "set_size", "pvalue", "enrichment")])
+  }
+} else {
+  cat("Too few significant genes for meaningful enrichment analysis\n")
+  enrichment_results <- NULL
+}
+```
+
+### Enrichment Visualization
+
+```{r fig.width=10, fig.height=6}
+if (!is.null(enrichment_results) && any(enrichment_results$padj < 0.1)) {
+  p4 <- plot_enrichment(
+    enrichment_results,
+    top_n = 10,
+    plot_type = "dot",
+    color_by = "enrichment",
+    pval_threshold = 0.1
+  )
+  
+  print(p4)
+} else {
+  cat("No significant enrichment to visualize\n")
+}
+```
+
+## Step 5: Multi-Level Integration
+
+### Integrating Evidence Across Levels
+
+```{r}
+# Create results list for integration
+results_list <- list(
+  genes = gene_results,
+  pathways = pathway_results_gsva,
+  families = family_results
+)
+
+# Perform evidence-based integration
+integrated_results <- integrate_levels(
+  results_list,
+  integration_method = "evidence_scoring",
+  weights = c(genes = 1, pathways = 2, families = 1.5),  # Weight pathways higher
+  alpha = 0.05
+)
+
+print(integrated_results)
+summary(integrated_results)
+```
+
+### Multi-Level Comparison
+
+```{r fig.width=12, fig.height=8}
+# Create multi-level summary visualization
+summary_table <- create_multilevel_summary(results_list, alpha = 0.05)
+print(summary_table)
+
+# Multi-level comparison plots
+p5 <- plot_multilevel(results_list, plot_type = "summary_bar")
+
+# Show concordance between levels (if possible)
+if (nrow(sig_genes) >= 5) {
+  # For demonstration, create a simplified concordance view
+  level_comparison <- data.frame(
+    Level = c("Genes", "Pathways", "Families"),
+    Significant = c(
+      sum(gene_results$results$padj < 0.05, na.rm = TRUE),
+      sum(pathway_results_gsva$results$pvalue < 0.1, na.rm = TRUE),
+      sum(family_results$results$pvalue < 0.1, na.rm = TRUE)
+    ),
+    Total = c(
+      nrow(gene_results$results),
+      nrow(pathway_results_gsva$results),
+      nrow(family_results$results)
+    )
+  )
+  
+  level_comparison$Percentage <- 100 * level_comparison$Significant / level_comparison$Total
+  
+  p6 <- ggplot(level_comparison, aes(x = Level, y = Percentage, fill = Level)) +
+    geom_col(alpha = 0.7) +
+    geom_text(aes(label = paste0(Significant, "/", Total)), vjust = -0.5) +
+    labs(
+      title = "Significant Features by Analysis Level",
+      x = "Analysis Level",
+      y = "Percentage Significant (%)",
+      fill = "Level"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  combined_plot <- p5 / p6
+  print(combined_plot)
+}
+```
+
+## Step 6: Biological Interpretation
+
+### Functional Theme Analysis
+
+```{r}
+# Analyze functional themes from different levels
+functional_summary <- list()
+
+# Gene-level themes
+if (nrow(sig_genes) > 0) {
+  cat("Gene-level findings:\n")
+  cat("- Total significant genes:", nrow(sig_genes), "\n")
+  cat("- Upregulated:", sum(sig_genes$log2FoldChange > 0), "\n")
+  cat("- Downregulated:", sum(sig_genes$log2FoldChange < 0), "\n")
+  
+  # Look for patterns in gene names (simplified)
+  gene_patterns <- c("ribosomal" = "^RP[SL]", 
+                    "mitochondrial" = "^MT-",
+                    "histone" = "^HIST",
+                    "immunoglobulin" = "^IG[HKL]")
+  
+  for (pattern_name in names(gene_patterns)) {
+    pattern_genes <- grep(gene_patterns[pattern_name], sig_genes$gene, value = TRUE)
+    if (length(pattern_genes) > 0) {
+      cat("- ", pattern_name, " genes:", length(pattern_genes), "\n")
+    }
+  }
+}
+
+# Pathway-level themes
+if (nrow(pathway_sig) > 0) {
+  cat("\nPathway-level themes:\n")
+  pathway_directions <- table(sign(pathway_sig$log2FoldChange))
+  cat("- Upregulated pathways:", pathway_directions["1"], "\n")
+  cat("- Downregulated pathways:", pathway_directions["-1"], "\n")
+}
+
+# Family-level themes  
+if (nrow(family_sig) > 0) {
+  cat("\nFamily-level themes:\n")
+  family_directions <- table(sign(family_sig$log2FoldChange))
+  cat("- Upregulated families:", family_directions["1"], "\n")
+  cat("- Downregulated families:", family_directions["-1"], "\n")
+}
+```
+
+### Cross-Level Validation
+
+```{r}
+# Check consistency between levels
+validation_summary <- list()
+
+# Check if pathway results are supported by gene-level evidence
+if (!is.null(enrichment_results) && nrow(enrichment_results) > 0) {
+  consistent_pathways <- enrichment_results %>%
+    filter(padj < 0.1) %>%
+    pull(gene_set)
+  
+  pathway_de_results <- pathway_results_gsva$results %>%
+    filter(pathway %in% paste0("HALLMARK_", consistent_pathways))
+  
+  if (nrow(pathway_de_results) > 0) {
+    cat("Cross-validation summary:\n")
+    cat("- Pathways significant in both enrichment and DE:", 
+        length(intersect(consistent_pathways, 
+                        gsub("HALLMARK_", "", pathway_de_results$pathway))), "\n")
+  }
+}
+
+# Check gene-family consistency
+family_gene_mapping <- family_results$gene_mapping
+if (!is.null(family_gene_mapping) && nrow(sig_genes) > 0) {
+  sig_gene_families <- family_gene_mapping %>%
+    filter(gene %in% sig_genes$gene) %>%
+    group_by(family) %>%
+    summarise(n_sig_genes = n(), .groups = "drop")
+  
+  family_overlap <- family_sig %>%
+    left_join(sig_gene_families, by = "family")
+  
+  if (nrow(family_overlap) > 0) {
+    cat("- Families with both family-level and gene-level evidence:", 
+        sum(!is.na(family_overlap$n_sig_genes)), "\n")
+  }
+}
+```
+
+## Step 7: Results Export and Reporting
+
+### Export Analysis Results
+
+```{r eval=FALSE}
+# Export comprehensive results
+exported_files <- export_results(
+  results_list,
+  output_dir = "treatment_response_analysis",
+  filename_prefix = "funDE_treatment_study",
+  formats = c("excel", "csv", "html"),
+  include_plots = TRUE,
+  metadata = list(
+    study_title = "Treatment Response Multi-Level Analysis",
+    analyst = "Your Name",
+    date = Sys.Date(),
+    description = "Comprehensive functional differential expression analysis"
+  )
+)
+
+cat("Results exported to:", exported_files$excel, "\n")
+```
+
+### Create Summary Report
+
+```{r}
+# Generate final summary
+cat("=== TREATMENT RESPONSE ANALYSIS SUMMARY ===\n\n")
+
+cat("STUDY DESIGN:\n")
+cat("- Samples:", nrow(example_metadata), "\n")
+cat("- Conditions: Treated (", sum(example_metadata$condition == "treated"), 
+    ") vs Control (", sum(example_metadata$condition == "control"), ")\n")
+cat("- Batches:", length(unique(example_metadata$batch)), "\n")
+cat("- Genes analyzed:", nrow(gene_results$results), "\n\n")
+
+cat("KEY FINDINGS:\n")
+cat("1. Gene Level:\n")
+cat("   - Significant genes:", nrow(sig_genes), 
+    " (", round(100 * nrow(sig_genes) / nrow(gene_results$results), 1), "%)\n")
+
+if (nrow(pathway_sig) > 0) {
+  cat("2. Pathway Level:\n")
+  cat("   - Affected pathways (p < 0.1):", nrow(pathway_sig), "\n")
+  cat("   - Top pathway:", pathway_sig$pathway[1], 
+      " (LFC:", round(pathway_sig$log2FoldChange[1], 2), ")\n")
+}
+
+if (nrow(family_sig) > 0) {
+  cat("3. Family Level:\n")
+  cat("   - Affected families (p < 0.1):", nrow(family_sig), "\n")
+  cat("   - Top family:", family_sig$family[1],
+      " (LFC:", round(family_sig$log2FoldChange[1], 2), ")\n")
+}
+
+if (!is.null(enrichment_results)) {
+  enriched_count <- sum(enrichment_results$padj < 0.1, na.rm = TRUE)
+  if (enriched_count > 0) {
+    cat("4. Enrichment:\n")
+    cat("   - Enriched pathways:", enriched_count, "\n")
+  }
+}
+
+cat("\nCONCLUSIONS:\n")
+cat("- Treatment effects detected at multiple functional levels\n")
+cat("- Multi-level analysis provides comprehensive view of response\n")
+cat("- Functional changes complement individual gene effects\n")
+```
+
+## Discussion and Next Steps
+
+### Biological Insights
+
+The multi-level analysis reveals:
+
+1. **Gene-level changes**: Individual genes responding to treatment
+2. **Pathway coordination**: Biological processes affected as units  
+3. **Family responses**: Coordinated regulation within gene families
+4. **Cross-validation**: Consistency between analytical levels
+
+### Methodological Considerations
+
+1. **Statistical power**: Family and pathway analysis can detect coordinated changes
+2. **Multiple testing**: Reduced burden at higher functional levels
+3. **Biological interpretation**: Functional levels provide clearer biological meaning
+4. **Integration**: Evidence scoring combines information across levels
+
+### Future Directions
+
+1. **Validation studies**: Confirm key findings experimentally
+2. **Time-course analysis**: Examine temporal dynamics of response
+3. **Network analysis**: Build regulatory networks from multi-level data
+4. **Clinical translation**: Connect findings to phenotypic outcomes
+
+### Technical Notes
+
+- This analysis used simplified scoring methods for demonstration
+- Real analyses should consider more sophisticated pathway scoring (GSVA, AUCell)
+- Single-cell integration could provide cellular resolution
+- Network-based approaches could reveal regulatory mechanisms
+
+## Session Information
+
+```{r}
+sessionInfo()
+```
+
+---
+
+**Note**: This case study demonstrates the funDE workflow using simulated data. Real biological datasets would likely show stronger and more interpretable patterns across all functional levels.

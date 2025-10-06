@@ -1,0 +1,506 @@
+---
+title: "Single-Cell RNA-seq Analysis with funDE"
+author: "Kai Guo"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+vignette: >
+  %\VignetteIndexEntry{Single-Cell RNA-seq Analysis with funDE}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+## Introduction
+
+Single-cell RNA-seq (scRNA-seq) analysis presents unique challenges and opportunities for functional differential expression analysis. This vignette demonstrates how to use funDE with single-cell data, focusing on pseudobulk aggregation and cell type-specific analysis.
+
+## Why Pseudobulk for Differential Expression?
+
+While single-cell data provides cellular resolution, pseudobulk aggregation offers several advantages for differential expression:
+
+- **Statistical power**: Aggregation increases effective sample size
+- **Mature methods**: Leverage well-established bulk RNA-seq DE methods
+- **Sample-level inference**: Test biological hypotheses at the sample level
+- **Reduced noise**: Aggregation mitigates technical dropout and noise
+- **Compatibility**: Works with standard DE frameworks (DESeq2, edgeR, limma)
+
+```{r}
+library(funDE)
+library(dplyr)
+library(ggplot2)
+library(Matrix)
+
+# Load example data (simulating single-cell structure)
+data(example_counts)
+data(example_metadata)
+```
+
+## Simulating Single-Cell Data Structure
+
+For demonstration, let's simulate a single-cell dataset structure from our bulk data:
+
+```{r}
+# Create simulated single-cell data
+set.seed(42)
+
+# Simulate cell metadata
+n_cells_per_sample <- 50
+n_samples <- nrow(example_metadata)
+n_total_cells <- n_cells_per_sample * n_samples
+
+# Create cell metadata
+cell_metadata <- data.frame(
+  cell_id = paste0("Cell_", sprintf("%04d", 1:n_total_cells)),
+  sample_id = rep(example_metadata$sample_id, each = n_cells_per_sample),
+  condition = rep(example_metadata$condition, each = n_cells_per_sample),
+  batch = rep(example_metadata$batch, each = n_cells_per_sample),
+  cell_type = sample(c("T_cells", "B_cells", "Monocytes", "NK_cells"), 
+                    n_total_cells, replace = TRUE),
+  stringsAsFactors = FALSE
+)
+
+rownames(cell_metadata) <- cell_metadata$cell_id
+
+# Simulate single-cell count matrix (simplified approach)
+# In practice, you would load real scRNA-seq data
+sc_counts <- matrix(0, nrow = nrow(example_counts), ncol = n_total_cells)
+rownames(sc_counts) <- rownames(example_counts)
+colnames(sc_counts) <- cell_metadata$cell_id
+
+# Add some realistic single-cell characteristics
+for (i in 1:n_total_cells) {
+  sample_idx <- which(example_metadata$sample_id == cell_metadata$sample_id[i])
+  base_counts <- example_counts[, sample_idx]
+  
+  # Simulate single-cell variability
+  cell_counts <- rbinom(length(base_counts), 
+                       size = base_counts, 
+                       prob = 0.1)  # Dropout simulation
+  sc_counts[, i] <- cell_counts
+}
+
+# Convert to sparse matrix (typical for scRNA-seq)
+sc_counts <- Matrix(sc_counts, sparse = TRUE)
+
+cat("Simulated scRNA-seq data:\n")
+cat("Cells:", ncol(sc_counts), "\n")
+cat("Genes:", nrow(sc_counts), "\n")
+cat("Samples:", length(unique(cell_metadata$sample_id)), "\n")
+cat("Cell types:", length(unique(cell_metadata$cell_type)), "\n")
+```
+
+## Basic Pseudobulk Aggregation
+
+### Sample-Level Aggregation
+
+```{r}
+# Aggregate by sample (ignoring cell types)
+pseudobulk_sample <- aggregate_pseudobulk(
+  counts = sc_counts,
+  metadata = cell_metadata,
+  sample_col = "sample_id",
+  aggregate_by = "sample",
+  min_cells = 10
+)
+
+print(pseudobulk_sample)
+summary(pseudobulk_sample)
+```
+
+### Quality Control for Pseudobulk
+
+```{r}
+# Perform quality control
+qc_results <- qc_pseudobulk(pseudobulk_sample)
+print(qc_results$summary)
+
+# Examine per-sample metrics
+head(qc_results$metrics)
+```
+
+### Sample-Level Differential Expression
+
+```{r}
+# Perform differential expression on pseudobulk data
+pseudobulk_de <- analyze_genes(
+  counts = pseudobulk_sample$counts,
+  metadata = pseudobulk_sample$metadata,
+  design = ~ condition,
+  contrast = c("condition", "treated", "control"),
+  method = "DESeq2"
+)
+
+print(pseudobulk_de)
+```
+
+## Cell Type-Specific Analysis
+
+### Cell Type Pseudobulk Aggregation
+
+```{r}
+# Aggregate by sample and cell type
+pseudobulk_celltype <- aggregate_pseudobulk(
+  counts = sc_counts,
+  metadata = cell_metadata,
+  sample_col = "sample_id",
+  celltype_col = "cell_type",
+  aggregate_by = "sample_celltype",
+  min_cells = 15  # Require more cells for cell type analysis
+)
+
+print(pseudobulk_celltype)
+```
+
+### Cell Type-Specific DE Analysis
+
+```{r}
+# Check which cell types have sufficient samples
+celltype_counts <- table(pseudobulk_celltype$metadata$cell_type, 
+                        pseudobulk_celltype$metadata$condition)
+print(celltype_counts)
+
+# Analyze each cell type separately
+cell_types <- unique(pseudobulk_celltype$metadata$cell_type)
+celltype_results <- list()
+
+for (ct in cell_types) {
+  ct_metadata <- pseudobulk_celltype$metadata %>%
+    filter(cell_type == ct)
+  
+  # Check if we have samples from both conditions
+  conditions <- unique(ct_metadata$condition)
+  if (length(conditions) >= 2) {
+    ct_counts <- pseudobulk_celltype$counts[, rownames(ct_metadata)]
+    
+    # Filter genes with very low expression
+    keep_genes <- rowSums(ct_counts > 0) >= 2
+    ct_counts <- ct_counts[keep_genes, ]
+    
+    if (nrow(ct_counts) > 100) {  # Ensure sufficient genes
+      celltype_results[[ct]] <- analyze_genes(
+        counts = ct_counts,
+        metadata = ct_metadata,
+        design = ~ condition,
+        contrast = c("condition", "treated", "control"),
+        method = "DESeq2"
+      )
+      cat("Analyzed", ct, ":", nrow(celltype_results[[ct]]$results), "genes\n")
+    }
+  }
+}
+```
+
+## Pathway Analysis in Single-Cell Context
+
+### Cell Type-Specific Pathway Analysis
+
+```{r}
+# Load pathway data
+data(hallmark_pathways)
+
+# Perform pathway analysis for each cell type
+celltype_pathway_results <- list()
+
+for (ct in names(celltype_results)) {
+  if (!is.null(celltype_results[[ct]])) {
+    ct_metadata <- pseudobulk_celltype$metadata %>%
+      filter(cell_type == ct)
+    
+    ct_counts <- pseudobulk_celltype$counts[, rownames(ct_metadata)]
+    
+    celltype_pathway_results[[ct]] <- analyze_pathways(
+      counts = ct_counts,
+      metadata = ct_metadata,
+      design = ~ condition,
+      contrast = c("condition", "treated", "control"),
+      pathways = hallmark_pathways,
+      scoring_method = "mean"
+    )
+    cat("Pathway analysis for", ct, ":", 
+        nrow(celltype_pathway_results[[ct]]$results), "pathways\n")
+  }
+}
+```
+
+### Comparing Across Cell Types
+
+```{r fig.width=10, fig.height=8}
+if (length(celltype_pathway_results) >= 2) {
+  # Create comparison of pathway results across cell types
+  pathway_comparison <- data.frame(
+    CellType = character(),
+    Pathway = character(),
+    LogFC = numeric(),
+    PValue = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (ct in names(celltype_pathway_results)) {
+    ct_results <- celltype_pathway_results[[ct]]$results
+    pathway_comparison <- rbind(pathway_comparison, data.frame(
+      CellType = ct,
+      Pathway = ct_results$pathway,
+      LogFC = ct_results$log2FoldChange,
+      PValue = ct_results$pvalue,
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  # Plot heatmap of pathway responses across cell types
+  pathway_matrix <- pathway_comparison %>%
+    select(CellType, Pathway, LogFC) %>%
+    tidyr::pivot_wider(names_from = CellType, values_from = LogFC) %>%
+    column_to_rownames("Pathway") %>%
+    as.matrix()
+  
+  # Only plot if we have data
+  if (nrow(pathway_matrix) > 0 && ncol(pathway_matrix) > 1) {
+    pheatmap::pheatmap(
+      pathway_matrix,
+      scale = "none",
+      cluster_rows = TRUE,
+      cluster_cols = TRUE,
+      main = "Pathway Responses Across Cell Types",
+      na_col = "grey"
+    )
+  }
+}
+```
+
+## Advanced Single-Cell Analyses
+
+### Marker Gene Analysis
+
+```{r}
+# Find genes that are markers for specific cell types
+# (This is a simplified approach - real marker analysis would be more sophisticated)
+
+if (length(celltype_results) >= 2) {
+  # Compare each cell type vs others
+  marker_genes <- list()
+  
+  for (ct in names(celltype_results)) {
+    ct_results <- celltype_results[[ct]]$results
+    
+    # Genes upregulated in this cell type
+    markers <- ct_results %>%
+      filter(padj < 0.1, log2FoldChange > 0.5) %>%
+      arrange(desc(log2FoldChange)) %>%
+      head(10)
+    
+    if (nrow(markers) > 0) {
+      marker_genes[[ct]] <- markers$gene
+      cat("Top markers for", ct, ":", paste(head(markers$gene, 5), collapse = ", "), "\n")
+    }
+  }
+}
+```
+
+### Cell Type Proportion Analysis
+
+```{r fig.width=8, fig.height=6}
+# Analyze cell type proportions across conditions
+celltype_props <- cell_metadata %>%
+  group_by(sample_id, condition, cell_type) %>%
+  summarise(n_cells = n(), .groups = "drop") %>%
+  group_by(sample_id) %>%
+  mutate(proportion = n_cells / sum(n_cells))
+
+# Visualize cell type proportions
+ggplot(celltype_props, aes(x = condition, y = proportion, fill = cell_type)) +
+  geom_boxplot() +
+  facet_wrap(~cell_type, scales = "free_y") +
+  labs(
+    title = "Cell Type Proportions by Condition",
+    x = "Condition",
+    y = "Proportion of Cells",
+    fill = "Cell Type"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Integration with Bulk Analysis
+
+### Comparing Single-Cell and Bulk Results
+
+```{r}
+# Compare pseudobulk results with original bulk analysis
+bulk_results <- analyze_genes(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ condition,
+  contrast = c("condition", "treated", "control")
+)
+
+# Find common genes
+common_genes <- intersect(pseudobulk_de$results$gene, bulk_results$results$gene)
+
+if (length(common_genes) > 50) {
+  # Compare fold changes
+  comparison_data <- data.frame(
+    gene = common_genes,
+    bulk_lfc = bulk_results$results$log2FoldChange[match(common_genes, bulk_results$results$gene)],
+    pseudobulk_lfc = pseudobulk_de$results$log2FoldChange[match(common_genes, pseudobulk_de$results$gene)]
+  )
+  
+  # Calculate correlation
+  correlation <- cor(comparison_data$bulk_lfc, comparison_data$pseudobulk_lfc, 
+                    use = "complete.obs")
+  
+  cat("Correlation between bulk and pseudobulk fold changes:", round(correlation, 3), "\n")
+}
+```
+
+### Visualization of Bulk vs Pseudobulk
+
+```{r fig.width=8, fig.height=6}
+if (exists("comparison_data") && nrow(comparison_data) > 10) {
+  ggplot(comparison_data, aes(x = bulk_lfc, y = pseudobulk_lfc)) +
+    geom_point(alpha = 0.6) +
+    geom_smooth(method = "lm", se = TRUE, color = "red") +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "blue") +
+    labs(
+      title = "Bulk vs Pseudobulk Fold Changes",
+      subtitle = paste("Correlation:", round(correlation, 3)),
+      x = "Bulk Log2 Fold Change",
+      y = "Pseudobulk Log2 Fold Change"
+    ) +
+    theme_minimal()
+}
+```
+
+## Best Practices for Single-Cell DE
+
+### Experimental Design Considerations
+
+1. **Sample size**: Include multiple biological replicates per condition
+2. **Cell numbers**: Aim for >20 cells per sample per cell type
+3. **Batch effects**: Randomize sample processing across batches
+4. **Cell type identification**: Use robust cell type annotation methods
+
+### Technical Considerations
+
+1. **Aggregation strategy**: Choose appropriate aggregation level (sample vs cell type)
+2. **Filtering**: Remove low-quality cells and lowly expressed genes
+3. **Normalization**: Consider library size differences in aggregation
+4. **Statistical methods**: Use appropriate DE methods for count data
+
+### Quality Control
+
+```{r}
+# Additional QC metrics for single-cell pseudobulk
+cat("Single-cell pseudobulk QC summary:\n")
+cat("- Total cells used:", ncol(sc_counts), "\n")
+cat("- Pseudobulk samples created:", ncol(pseudobulk_sample$counts), "\n")
+cat("- Genes retained after filtering:", nrow(pseudobulk_sample$counts), "\n")
+cat("- Cell types analyzed:", length(celltype_results), "\n")
+
+# Check cell distribution
+cell_dist <- table(cell_metadata$sample_id, cell_metadata$cell_type)
+cat("- Cell distribution across samples and types:\n")
+print(cell_dist[1:5, ])  # Show first 5 samples
+```
+
+## Working with Real Single-Cell Objects
+
+### Seurat Integration
+
+```{r eval=FALSE}
+# Example workflow with Seurat object (not run)
+# Assuming you have a Seurat object called 'seurat_obj'
+
+# Extract count data and metadata
+sc_counts <- GetAssayData(seurat_obj, slot = "counts")
+sc_metadata <- seurat_obj@meta.data
+
+# Perform pseudobulk aggregation
+pseudobulk_seurat <- aggregate_pseudobulk(
+  counts = sc_counts,
+  metadata = sc_metadata,
+  sample_col = "sample",
+  celltype_col = "cell_type",
+  aggregate_by = "sample_celltype"
+)
+
+# Continue with funDE analysis...
+```
+
+### SingleCellExperiment Integration
+
+```{r eval=FALSE}
+# Example workflow with SingleCellExperiment object (not run)
+# Assuming you have an SCE object called 'sce'
+
+# Perform pseudobulk aggregation directly
+pseudobulk_sce <- aggregate_pseudobulk(
+  counts = sce,  # funDE can work directly with SCE objects
+  sample_col = "sample_id",
+  celltype_col = "cell_type",
+  aggregate_by = "sample_celltype"
+)
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Too few cells per sample**: Increase `min_cells` parameter or collect more data
+2. **Low gene detection**: Filter genes more stringently before aggregation
+3. **Batch effects**: Include batch in the design matrix
+4. **Cell type imbalance**: Consider cell type-specific analysis strategies
+
+### Advanced Diagnostics
+
+```{r}
+# Diagnostic plots and checks
+cat("Diagnostic information:\n")
+
+# Check for potential batch effects in pseudobulk
+if ("batch" %in% colnames(pseudobulk_sample$metadata)) {
+  batch_table <- table(pseudobulk_sample$metadata$condition, 
+                       pseudobulk_sample$metadata$batch)
+  cat("Batch distribution:\n")
+  print(batch_table)
+}
+
+# Check gene detection rates
+detection_rates <- rowMeans(pseudobulk_sample$counts > 0)
+cat("Gene detection rate summary:\n")
+print(summary(detection_rates))
+```
+
+## Future Directions
+
+### Advanced Analysis Options
+
+1. **Trajectory analysis**: Combine with pseudotime methods
+2. **Spatial analysis**: Integrate with spatial transcriptomics
+3. **Multi-modal**: Combine with CITE-seq or ATAC-seq data
+4. **Network analysis**: Use pathway results for network inference
+
+### Method Development
+
+1. **Cell type-aware aggregation**: Weight by cell type abundance
+2. **Dropout modeling**: Account for single-cell specific characteristics
+3. **Hierarchical analysis**: Leverage cell type hierarchies
+4. **Dynamic analysis**: Model temporal changes in cell states
+
+## Session Information
+
+```{r}
+sessionInfo()
+```

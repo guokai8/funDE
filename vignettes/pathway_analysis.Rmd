@@ -1,0 +1,534 @@
+---
+title: "Pathway Analysis with funDE"
+author: "Kai Guo"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+vignette: >
+  %\VignetteIndexEntry{Pathway Analysis with funDE}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+## Introduction
+
+Pathway analysis is a cornerstone of functional genomics that moves beyond individual genes to understand biological processes and systems. This vignette provides a comprehensive guide to pathway-level differential expression analysis using funDE.
+
+## Why Pathway Analysis?
+
+Pathway analysis offers several advantages:
+
+- **Biological interpretability**: Results map directly to known biological processes
+- **Increased statistical power**: Aggregating genes reduces multiple testing burden
+- **Robustness**: Less sensitive to individual gene noise and technical variation
+- **Systems perspective**: Reveals coordinated changes in biological networks
+- **Functional insights**: Connects expression changes to phenotypic outcomes
+
+```{r}
+library(funDE)
+library(dplyr)
+library(ggplot2)
+
+# Load example data
+data(example_counts)
+data(example_metadata)
+data(hallmark_pathways)
+```
+
+## Understanding Pathway Data
+
+### Exploring Available Pathways
+
+```{r}
+# Examine pathway structure
+cat("Number of pathways:", length(hallmark_pathways), "\n")
+cat("Pathway names:\n")
+head(names(hallmark_pathways), 10)
+
+# Pathway sizes
+pathway_sizes <- sapply(hallmark_pathways, length)
+summary(pathway_sizes)
+```
+
+### Pathway Coverage in Dataset
+
+```{r}
+# Check gene coverage
+all_pathway_genes <- unique(unlist(hallmark_pathways))
+available_genes <- rownames(example_counts)
+
+total_pathway_genes <- length(all_pathway_genes)
+available_pathway_genes <- sum(all_pathway_genes %in% available_genes)
+
+cat("Total pathway genes:", total_pathway_genes, "\n")
+cat("Available in dataset:", available_pathway_genes, "\n")
+cat("Coverage:", round(100 * available_pathway_genes / total_pathway_genes, 1), "%\n")
+
+# Coverage by pathway
+pathway_coverage <- sapply(hallmark_pathways, function(pathway) {
+  available <- sum(pathway %in% available_genes)
+  total <- length(pathway)
+  c(available = available, total = total, coverage = available/total)
+})
+
+coverage_df <- data.frame(
+  Pathway = colnames(pathway_coverage),
+  Available = pathway_coverage["available", ],
+  Total = pathway_coverage["total", ],
+  Coverage = round(100 * pathway_coverage["coverage", ], 1)
+)
+
+# Show pathways with best/worst coverage
+head(coverage_df[order(-coverage_df$Coverage), ])
+```
+
+## Pathway Scoring Methods
+
+funDE supports multiple methods for calculating pathway activity scores:
+
+### Comparison of Scoring Methods
+
+```{r}
+# Test different scoring methods
+scoring_methods <- c("mean", "median", "maxmean")
+pathway_scores_methods <- list()
+
+for (method in scoring_methods) {
+  cat("Calculating scores using", method, "method...\n")
+  
+  pathway_scores_methods[[method]] <- score_pathway_activity(
+    expression_matrix = log2(example_counts + 1),
+    gene_sets = hallmark_pathways,
+    method = method
+  )
+}
+
+# Compare score distributions
+score_comparison <- data.frame(
+  Method = rep(names(pathway_scores_methods), each = nrow(pathway_scores_methods[[1]])),
+  Pathway = rep(rownames(pathway_scores_methods[[1]]), length(scoring_methods)),
+  Score = c(as.vector(pathway_scores_methods$mean[, 1]),
+            as.vector(pathway_scores_methods$median[, 1]),
+            as.vector(pathway_scores_methods$maxmean[, 1]))
+)
+```
+
+### Visualizing Score Methods
+
+```{r fig.width=8, fig.height=6}
+ggplot(score_comparison, aes(x = Method, y = Score, fill = Method)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(
+    title = "Distribution of Pathway Scores by Method",
+    x = "Scoring Method",
+    y = "Pathway Activity Score"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+## Basic Pathway Analysis
+
+### Standard Pathway Differential Expression
+
+```{r}
+# Perform pathway-level differential expression
+pathway_results <- analyze_pathways(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ condition,
+  contrast = c("condition", "treated", "control"),
+  pathways = hallmark_pathways,
+  scoring_method = "mean",
+  de_method = "limma"
+)
+
+# View results
+print(pathway_results)
+summary(pathway_results)
+```
+
+### Exploring Pathway Results
+
+```{r}
+# Look at top significant pathways
+top_pathways <- pathway_results$results %>%
+  filter(padj < 0.05) %>%
+  arrange(padj) %>%
+  head(10)
+
+if (nrow(top_pathways) > 0) {
+  print(top_pathways[, c("pathway", "n_genes", "log2FoldChange", "padj")])
+} else {
+  cat("No pathways reach significance threshold in this example\n")
+  # Show top pathways by p-value anyway
+  top_by_pval <- pathway_results$results %>%
+    arrange(pvalue) %>%
+    head(5)
+  print(top_by_pval[, c("pathway", "n_genes", "log2FoldChange", "pvalue")])
+}
+```
+
+## Advanced Pathway Analysis
+
+### Using Different Databases
+
+```{r}
+# You can use different pathway databases
+# List available databases
+list_pathway_databases()
+```
+
+### Custom Pathway Sets
+
+```{r}
+# Create custom pathway sets
+custom_pathways <- list(
+  "Cell_Cycle_G1S" = c("CCND1", "CCNE1", "CDK2", "CDK4", "RB1", "E2F1"),
+  "Cell_Cycle_G2M" = c("CCNB1", "CDK1", "CCNA2", "CDC25C", "PLK1", "AURKA"),
+  "DNA_Damage_Response" = c("ATM", "ATR", "CHEK1", "CHEK2", "TP53", "BRCA1"),
+  "Apoptosis_Intrinsic" = c("BCL2", "BAX", "BAK1", "CYCS", "APAF1", "CASP9"),
+  "Apoptosis_Extrinsic" = c("FAS", "FASLG", "TNFRSF1A", "TNF", "CASP8", "CASP3")
+)
+
+# Analyze custom pathways
+custom_pathway_results <- analyze_pathways(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ condition,
+  contrast = c("condition", "treated", "control"),
+  pathways = custom_pathways,
+  scoring_method = "mean"
+)
+
+print(custom_pathway_results$results)
+```
+
+### Method Comparison
+
+```{r}
+# Compare different scoring methods
+method_comparison <- compare_scoring_methods(
+  expression_matrix = log2(example_counts + 1),
+  gene_sets = hallmark_pathways,
+  methods = c("mean", "median", "maxmean"),
+  sample_pathways = 8
+)
+
+if (!is.null(method_comparison$correlations)) {
+  cat("Correlation between scoring methods:\n")
+  print(round(method_comparison$correlations, 3))
+}
+```
+
+## Visualization
+
+### Pathway Activity Heatmap
+
+```{r fig.width=10, fig.height=8}
+# Create pathway activity heatmap
+plot_pathway_heatmap(
+  pathway_results,
+  top_n = 15,
+  annotation_cols = "condition",
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  color_scheme = "RdBu"
+)
+```
+
+### Pathway Activity Distribution
+
+```{r fig.width=10, fig.height=6}
+# Plot pathway activity distributions
+plot_pathway_distribution(
+  pathway_results,
+  pathways = head(names(hallmark_pathways), 6),
+  group_by = "condition",
+  plot_type = "violin"
+)
+```
+
+### Volcano Plot for Pathways
+
+```{r fig.width=8, fig.height=6}
+# Create volcano plot
+pathway_volcano_data <- pathway_results$results %>%
+  mutate(
+    neg_log10_padj = -log10(pvalue),
+    significance = case_when(
+      pvalue < 0.01 & abs(log2FoldChange) > 0.5 ~ "Highly Significant",
+      pvalue < 0.05 & abs(log2FoldChange) > 0.25 ~ "Significant",
+      TRUE ~ "Not Significant"
+    )
+  )
+
+ggplot(pathway_volcano_data, aes(x = log2FoldChange, y = neg_log10_padj, color = significance)) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", alpha = 0.5) +
+  geom_vline(xintercept = c(-0.25, 0.25), linetype = "dashed", alpha = 0.5) +
+  scale_color_manual(values = c(
+    "Highly Significant" = "red",
+    "Significant" = "orange",
+    "Not Significant" = "gray"
+  )) +
+  labs(
+    title = "Pathway Volcano Plot",
+    x = "Log2 Fold Change",
+    y = "-log10(p-value)",
+    color = "Significance"
+  ) +
+  theme_minimal()
+```
+
+## Enrichment Analysis
+
+### Gene Set Enrichment
+
+```{r}
+# First, get significant genes from gene-level analysis
+gene_results <- analyze_genes(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ condition,
+  contrast = c("condition", "treated", "control")
+)
+
+sig_genes <- gene_results$results %>%
+  filter(padj < 0.1) %>%  # Relaxed threshold for demonstration
+  pull(gene)
+
+cat("Number of significant genes:", length(sig_genes), "\n")
+
+# Test for pathway enrichment
+if (length(sig_genes) > 10) {
+  enrichment_results <- test_enrichment(
+    genes = sig_genes,
+    universe = rownames(gene_results$results),
+    gene_sets = hallmark_pathways,
+    method = "hypergeometric"
+  )
+  
+  # View top enriched pathways
+  head(enrichment_results)
+} else {
+  cat("Too few significant genes for meaningful enrichment analysis\n")
+}
+```
+
+### Enrichment Visualization
+
+```{r fig.width=8, fig.height=6}
+if (exists("enrichment_results")) {
+  plot_enrichment(
+    enrichment_results,
+    top_n = 10,
+    plot_type = "dot",
+    color_by = "enrichment"
+  )
+}
+```
+
+## Integration with Gene-Level Results
+
+### Comparing Pathway and Gene Results
+
+```{r fig.width=8, fig.height=6}
+# Create multi-level comparison
+results_list <- list(
+  genes = gene_results,
+  pathways = pathway_results
+)
+
+# Summary comparison
+plot_multilevel(results_list, plot_type = "summary_bar")
+```
+
+### Concordance Analysis
+
+```{r fig.width=8, fig.height=6}
+# For pathways that can be compared with genes, show concordance
+# This is a simplified example - in practice you'd need pathway-gene mappings
+
+# Create summary table
+level_summary <- create_multilevel_summary(results_list, alpha = 0.05)
+print(level_summary)
+```
+
+## Biological Interpretation
+
+### Pathway Categories
+
+```{r}
+# Categorize pathways by biological function
+pathway_categories <- data.frame(
+  Pathway = names(hallmark_pathways),
+  Category = c(
+    "Metabolism",           # GLYCOLYSIS
+    "Metabolism",           # OXIDATIVE_PHOSPHORYLATION
+    "DNA/Cell Cycle",       # DNA_REPAIR
+    "Signaling",            # MYC_TARGETS_V1
+    "Signaling",            # MTORC1_SIGNALING
+    "DNA/Cell Cycle",       # P53_PATHWAY
+    "Immune",               # INFLAMMATORY_RESPONSE
+    "Signaling",            # TNFA_SIGNALING_VIA_NFKB
+    "Stress",               # HYPOXIA
+    "Stress",               # UV_RESPONSE_DN
+    "Stress"                # UNFOLDED_PROTEIN_RESPONSE
+  )
+)
+
+# Analyze by category
+pathway_results_with_category <- pathway_results$results %>%
+  left_join(pathway_categories, by = c("pathway" = "Pathway"))
+
+category_summary <- pathway_results_with_category %>%
+  group_by(Category) %>%
+  summarise(
+    N_Pathways = n(),
+    Mean_LFC = mean(log2FoldChange, na.rm = TRUE),
+    Mean_PValue = mean(pvalue, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(category_summary)
+```
+
+### Pathway Network Analysis
+
+```{r}
+# Examine pathway relationships through shared genes
+pathway_overlap <- function(p1, p2) {
+  genes1 <- hallmark_pathways[[p1]]
+  genes2 <- hallmark_pathways[[p2]]
+  length(intersect(genes1, genes2)) / length(union(genes1, genes2))
+}
+
+# Calculate overlaps for a subset of pathways
+pathway_names <- names(hallmark_pathways)[1:5]
+overlap_matrix <- outer(pathway_names, pathway_names, Vectorize(pathway_overlap))
+rownames(overlap_matrix) <- colnames(overlap_matrix) <- pathway_names
+
+cat("Pathway overlap matrix (Jaccard similarity):\n")
+print(round(overlap_matrix, 2))
+```
+
+## Quality Control and Diagnostics
+
+### Pathway Score Quality
+
+```{r}
+# Check pathway score distributions
+pathway_scores <- pathway_results$pathway_scores
+
+# Summary statistics
+score_stats <- data.frame(
+  Pathway = rownames(pathway_scores),
+  Mean = rowMeans(pathway_scores),
+  Variance = apply(pathway_scores, 1, var),
+  Range = apply(pathway_scores, 1, function(x) max(x) - min(x))
+)
+
+# Identify potential issues
+problematic_pathways <- score_stats %>%
+  filter(Variance < 0.01 | Range < 0.1)
+
+if (nrow(problematic_pathways) > 0) {
+  cat("Pathways with low variance (potential issues):\n")
+  print(problematic_pathways)
+} else {
+  cat("All pathways show reasonable score variance\n")
+}
+```
+
+### Sample Quality Assessment
+
+```{r fig.width=8, fig.height=6}
+# PCA of pathway scores
+pathway_pca <- prcomp(t(pathway_scores), scale. = TRUE)
+
+pca_data <- data.frame(
+  Sample = rownames(pathway_pca$x),
+  PC1 = pathway_pca$x[, 1],
+  PC2 = pathway_pca$x[, 2],
+  Condition = example_metadata$condition
+)
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Condition)) +
+  geom_point(size = 3, alpha = 0.7) +
+  labs(
+    title = "PCA of Pathway Activity Scores",
+    x = paste0("PC1 (", round(100 * summary(pathway_pca)$importance[2, 1], 1), "%)"),
+    y = paste0("PC2 (", round(100 * summary(pathway_pca)$importance[2, 2], 1), "%)")
+  ) +
+  theme_minimal()
+```
+
+## Best Practices
+
+### Pathway Selection
+
+1. **Use established databases**: MSigDB, KEGG, Reactome provide curated sets
+2. **Consider pathway size**: 15-500 genes typically work well
+3. **Avoid redundancy**: Remove highly overlapping pathways
+4. **Context relevance**: Choose pathways relevant to your biological system
+
+### Scoring Method Selection
+
+1. **Mean**: Good general-purpose method, interpretable
+2. **Median**: More robust to outliers
+3. **GSVA**: Best for detecting subtle coordinated changes
+4. **AUCell**: Good for single-cell and sparse data
+
+### Statistical Considerations
+
+1. **Multiple testing**: Pathway analysis naturally reduces testing burden
+2. **Effect sizes**: Consider biological significance
+3. **Sample size**: Ensure adequate power for pathway-level detection
+4. **Validation**: Confirm with independent datasets or experiments
+
+### Interpretation Guidelines
+
+1. **Biological plausibility**: Do results make biological sense?
+2. **Literature support**: Are findings consistent with known biology?
+3. **Effect magnitude**: Large effect sizes may be more meaningful
+4. **Pathway interactions**: Consider crosstalk between pathways
+
+## Troubleshooting
+
+### Common Issues
+
+1. **No significant pathways**: Try different scoring methods or relaxed thresholds
+2. **All pathways significant**: May indicate strong global effects
+3. **Unexpected results**: Check gene identifier matching and pathway definitions
+4. **Technical artifacts**: Examine sample quality and batch effects
+
+### Advanced Diagnostics
+
+```{r}
+# Check for technical issues
+cat("Pathway analysis diagnostics:\n")
+cat("- Number of pathways tested:", nrow(pathway_results$results), "\n")
+cat("- Pathways with valid scores:", sum(!is.na(pathway_results$results$pvalue)), "\n")
+cat("- Score range:", range(pathway_scores, na.rm = TRUE), "\n")
+cat("- Samples included:", ncol(pathway_scores), "\n")
+```
+
+## Session Information
+
+```{r}
+sessionInfo()
+```

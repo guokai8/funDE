@@ -1,0 +1,285 @@
+---
+title: "Introduction to funDE: Functional Differential Expression Analysis"
+author: "Kai Guo"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+vignette: >
+  %\VignetteIndexEntry{Introduction to funDE}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+## Overview
+
+**funDE** (Functional Differential Expression) is an R package that extends traditional gene-level differential expression analysis to higher-order functional units including gene families, pathways, and transcripts. This approach can detect coordinated changes that might be missed at the individual gene level and provides more interpretable biological insights.
+
+### Why Functional-Level Analysis?
+
+Traditional differential expression analysis focuses on individual genes, but biological processes often involve:
+
+- **Coordinated regulation** of gene families or pathway members
+- **Subtle changes** that become significant when aggregated
+- **Functional redundancy** where family members compensate for each other
+- **Pathway-level alterations** without strong individual gene effects
+
+funDE addresses these challenges by providing:
+
+1. **Multi-level analysis** across genes, families, pathways, and transcripts
+2. **Unified framework** for bulk and single-cell RNA-seq data
+3. **Custom enrichment testing** without external dependencies
+4. **Rich visualizations** for exploring functional patterns
+5. **Integration tools** for combining evidence across levels
+
+## Installation
+
+```{r eval=FALSE}
+# Install from GitHub (when available)
+devtools::install_github("yourusername/funDE")
+
+# Install required Bioconductor packages
+BiocManager::install(c("DESeq2", "edgeR", "limma", "GSVA", "AUCell", "fgsea"))
+```
+
+## Quick Start
+
+### Loading the Package and Data
+
+```{r}
+library(funDE)
+library(dplyr)
+library(ggplot2)
+
+# Load example data
+data(example_counts)
+data(example_metadata)
+
+# Examine the data structure
+dim(example_counts)
+head(example_metadata)
+```
+
+### Basic Gene-Level Analysis
+
+```{r}
+# Perform gene-level differential expression
+gene_results <- analyze_genes(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ condition,
+  contrast = c("condition", "treated", "control"),
+  method = "DESeq2"
+)
+
+# View results summary
+print(gene_results)
+summary(gene_results)
+```
+
+### Pathway-Level Analysis
+
+```{r}
+# Load pathway data
+data(hallmark_pathways)
+
+# Perform pathway-level analysis
+pathway_results <- analyze_pathways(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ condition,
+  contrast = c("condition", "treated", "control"),
+  pathways = hallmark_pathways,
+  scoring_method = "GSVA"  # Simple mean for demonstration
+)
+
+print(pathway_results)
+```
+
+### Gene Family Analysis
+
+```{r}
+# Load gene family data
+data(hgnc_families)
+
+# Perform family-level analysis
+family_results <- analyze_families(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ condition,
+  contrast = c("condition", "treated", "control"),
+  families = hgnc_families,
+  aggregation_method = "mean"
+)
+
+print(family_results)
+```
+
+## Enrichment Testing
+
+funDE includes custom enrichment testing functionality that doesn't rely on external packages:
+
+```{r}
+# Get significant genes from gene-level analysis
+sig_genes <- gene_results$results %>%
+  filter(padj < 0.05) %>%
+  pull(gene)
+
+# Test for pathway enrichment
+enrichment_results <- test_enrichment(
+  genes = sig_genes,
+  universe = rownames(gene_results$results),
+  gene_sets = hallmark_pathways,
+  method = "hypergeometric"
+)
+
+# View top enriched pathways
+head(enrichment_results)
+```
+
+## Visualization
+
+### Multi-Level Comparison
+
+```{r fig.width=8, fig.height=6}
+# Create a list of results for comparison
+results_list <- list(
+  genes = gene_results,
+  families = family_results,
+  pathways = pathway_results
+)
+
+# Create summary comparison
+plot_multilevel(results_list, plot_type = "summary_bar")
+```
+
+### Pathway Activity Heatmap
+
+```{r fig.width=10, fig.height=8}
+# Plot pathway activity heatmap
+plot_pathway_heatmap(
+  pathway_results,
+  top_n = 15,
+  annotation_cols = "condition",
+  cluster_rows = TRUE,
+  cluster_cols = TRUE
+)
+```
+
+### Enrichment Visualization
+
+```{r fig.width=8, fig.height=6}
+# Plot enrichment results
+plot_enrichment(
+  enrichment_results,
+  top_n = 10,
+  plot_type = "bar"
+)
+```
+
+## Integration Across Levels
+
+One of funDE's key features is the ability to integrate evidence across different functional levels:
+
+```{r}
+# Integrate results using evidence scoring
+integrated_results <- integrate_levels(
+  results_list,
+  integration_method = "evidence_scoring",
+  weights = c(genes = 1, families = 1.5, pathways = 2)
+)
+
+# View integration summary
+summary(integrated_results)
+```
+
+## Export Results
+
+funDE provides comprehensive export functionality:
+
+```{r eval=FALSE}
+# Export all results to multiple formats
+exported_files <- export_results(
+  results_list,
+  output_dir = "funDE_analysis_results",
+  formats = c("excel", "csv", "html"),
+  include_plots = TRUE
+)
+
+# Quick Excel export for single result
+quick_excel_export(gene_results, "gene_analysis.xlsx")
+```
+
+## Key Concepts
+
+### Analysis Levels
+
+1. **Gene Level**: Traditional differential expression of individual genes
+2. **Family Level**: Analysis of gene families (e.g., ribosomal proteins, histones)
+3. **Pathway Level**: Analysis of biological pathways and gene sets
+4. **Region Level**: Transcript/isoform-level analysis for differential transcript usage
+
+### Scoring Methods
+
+For pathway analysis, funDE supports multiple scoring methods:
+
+- **Mean**: Simple average expression of pathway genes
+- **Median**: Robust average using median
+- **MaxMean**: Mean of top 50% expressed genes in pathway
+- **GSVA**: Gene Set Variation Analysis (requires GSVA package)
+- **ssGSEA**: Single-sample GSEA (requires GSVA package)
+- **AUCell**: Area Under the Curve approach (requires AUCell package)
+
+### Integration Methods
+
+- **Evidence Scoring**: Combines significance, effect size, and consistency
+- **Rank Aggregation**: Combines feature rankings across levels
+- **Consensus**: Identifies features significant in multiple levels
+- **Pathway-Guided**: Uses pathway structure to inform integration
+
+## Best Practices
+
+### Experimental Design
+
+1. **Balanced design**: Ensure adequate replicates per condition
+2. **Batch effects**: Include batch information in metadata
+3. **Sample quality**: Filter poor-quality samples before analysis
+
+### Analysis Strategy
+
+1. **Start with gene-level**: Understand overall expression patterns
+2. **Progress to pathways**: Identify functional themes
+3. **Check families**: Look for coordinated regulation
+4. **Integrate evidence**: Combine findings across levels
+
+### Interpretation
+
+1. **Multiple testing**: Consider the reduced burden at pathway level
+2. **Effect sizes**: Look at both significance and magnitude
+3. **Biological context**: Consider pathway relationships and hierarchies
+4. **Validation**: Confirm key findings with independent methods
+
+## Getting Help
+
+- Function documentation: `?analyze_genes`
+- Package overview: `help(package = "funDE")`
+- Vignettes: `browseVignettes("funDE")`
+- GitHub issues: Report bugs and request features
+
+## Session Information
+
+```{r}
+sessionInfo()
+```

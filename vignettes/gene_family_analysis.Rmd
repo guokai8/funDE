@@ -1,0 +1,435 @@
+---
+title: "Gene Family Analysis with funDE"
+author: "Kai Guo"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+vignette: >
+  %\VignetteIndexEntry{Gene Family Analysis with funDE}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+## Introduction
+
+Gene family analysis is a powerful approach for detecting coordinated regulation among functionally related genes. This vignette demonstrates how to use funDE for comprehensive gene family-level differential expression analysis.
+
+## Why Gene Family Analysis?
+
+Individual genes within a family often show:
+
+- **Coordinated regulation** in response to stimuli
+- **Functional redundancy** that can mask individual effects
+- **Compensation mechanisms** when family members are perturbed
+- **Tissue-specific expression** patterns
+
+Gene family analysis can reveal:
+
+- **Family-wide responses** that individual genes might miss
+- **Regulatory coordination** across family members
+- **Functional modules** within larger families
+- **Evolutionary conservation** of regulatory mechanisms
+
+```{r}
+library(funDE)
+library(dplyr)
+library(ggplot2)
+
+# Load example data
+data(example_counts)
+data(example_metadata)
+data(hgnc_families)
+```
+
+## Exploring Gene Families
+
+### Understanding the Family Data
+
+```{r}
+# Examine gene family structure
+length(hgnc_families)
+names(hgnc_families)
+
+# Look at family sizes
+family_sizes <- sapply(hgnc_families, length)
+summary(family_sizes)
+
+# Examine specific families
+head(hgnc_families$Ribosomal_proteins_cytosolic_40S)
+head(hgnc_families$Heat_shock_proteins_70kDa)
+```
+
+### Checking Gene Coverage
+
+```{r}
+# Check how many genes are in our dataset
+all_family_genes <- unique(unlist(hgnc_families))
+available_genes <- rownames(example_counts)
+
+# Coverage statistics
+total_family_genes <- length(all_family_genes)
+available_family_genes <- sum(all_family_genes %in% available_genes)
+
+cat("Total family genes:", total_family_genes, "\n")
+cat("Available in dataset:", available_family_genes, "\n")
+cat("Coverage:", round(100 * available_family_genes / total_family_genes, 1), "%\n")
+
+# Coverage by family
+family_coverage <- sapply(hgnc_families, function(family) {
+  sum(family %in% available_genes) / length(family)
+})
+
+data.frame(
+  Family = names(family_coverage),
+  Coverage = round(100 * family_coverage, 1)
+)
+```
+
+## Basic Family Analysis
+
+### Standard Family-Level Analysis
+
+```{r}
+# Perform family-level differential expression
+family_results <- analyze_families(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ condition,
+  contrast = c("condition", "treated", "control"),
+  families = hgnc_families,
+  aggregation_method = "mean",
+  min_family_size = 3  # Require at least 3 genes per family
+)
+
+# View results
+print(family_results)
+summary(family_results)
+```
+
+### Exploring Results
+
+```{r}
+# Look at top significant families
+top_families <- family_results$results %>%
+  filter(padj < 0.05) %>%
+  arrange(padj) %>%
+  head(10)
+
+print(top_families[, c("family", "n_genes", "log2FoldChange", "padj")])
+```
+
+## Aggregation Methods
+
+Different aggregation methods can reveal different aspects of family behavior:
+
+### Comparing Aggregation Methods
+
+```{r}
+# Test different aggregation methods
+methods <- c("mean", "median", "sum")
+family_results_methods <- list()
+
+for (method in methods) {
+  family_results_methods[[method]] <- analyze_families(
+    counts = example_counts,
+    metadata = example_metadata,
+    design = ~ condition,
+    contrast = c("condition", "treated", "control"),
+    families = hgnc_families,
+    aggregation_method = method,
+    min_family_size = 3
+  )
+}
+
+# Compare number of significant families
+sig_counts <- sapply(family_results_methods, function(res) {
+  sum(res$results$padj < 0.05, na.rm = TRUE)
+})
+
+data.frame(
+  Method = names(sig_counts),
+  Significant_Families = sig_counts
+)
+```
+
+### Method Comparison Visualization
+
+```{r fig.width=8, fig.height=6}
+# Create comparison data
+comparison_data <- data.frame(
+  Family = family_results_methods$mean$results$family,
+  Mean_LFC = family_results_methods$mean$results$log2FoldChange,
+  Median_LFC = family_results_methods$median$results$log2FoldChange,
+  Sum_LFC = family_results_methods$sum$results$log2FoldChange
+)
+
+# Plot mean vs median
+ggplot(comparison_data, aes(x = Mean_LFC, y = Median_LFC)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  labs(
+    title = "Comparison of Aggregation Methods",
+    x = "Log2 Fold Change (Mean)",
+    y = "Log2 Fold Change (Median)"
+  ) +
+  theme_minimal()
+```
+
+## Advanced Family Analysis
+
+### Custom Gene Families
+
+You can define custom gene families based on your research interests:
+
+```{r}
+# Create custom families
+custom_families <- list(
+  "DNA_Repair_Core" = c("BRCA1", "BRCA2", "ATM", "ATR", "CHEK1", "CHEK2"),
+  "Cell_Cycle_Checkpoints" = c("TP53", "CDKN1A", "CDKN2A", "RB1", "E2F1"),
+  "Apoptosis_Regulators" = c("BCL2", "BAX", "BAK1", "CASP3", "CASP9"),
+  "Inflammatory_Cytokines" = c("IL1B", "IL6", "TNF", "IFNG", "IL10")
+)
+
+# Analyze custom families
+custom_results <- analyze_families(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ condition,
+  contrast = c("condition", "treated", "control"),
+  families = custom_families,
+  aggregation_method = "mean",
+  min_family_size = 2
+)
+
+print(custom_results$results)
+```
+
+### Family-Gene Mapping
+
+```{r}
+# Examine which genes contribute to each family result
+family_mapping <- family_results$gene_mapping
+
+# Look at a specific family
+ribosomal_40s_genes <- family_mapping %>%
+  filter(family == "Ribosomal_proteins_cytosolic_40S") %>%
+  pull(gene)
+
+# Check which of these genes are in our dataset
+ribosomal_in_data <- intersect(ribosomal_40s_genes, rownames(example_counts))
+cat("Ribosomal 40S genes in dataset:", length(ribosomal_in_data), "\n")
+cat("Genes:", paste(head(ribosomal_in_data), collapse = ", "), "\n")
+```
+
+## Visualization
+
+### Family Expression Heatmap
+
+```{r fig.width=10, fig.height=8}
+# Create a heatmap of family expression
+family_expr <- family_results$family_counts
+
+# Select top variable families
+family_var <- apply(family_expr, 1, var)
+top_var_families <- names(sort(family_var, decreasing = TRUE))[1:10]
+
+# Plot heatmap
+pheatmap::pheatmap(
+  family_expr[top_var_families, ],
+  scale = "row",
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  annotation_col = example_metadata[, "condition", drop = FALSE],
+  main = "Gene Family Expression Heatmap",
+  fontsize = 10
+)
+```
+
+### Family Size Distribution
+
+```{r fig.width=8, fig.height=6}
+# Analyze family sizes
+family_size_data <- data.frame(
+  Family = names(family_sizes),
+  Size = family_sizes,
+  Type = ifelse(family_sizes >= 10, "Large", 
+                ifelse(family_sizes >= 5, "Medium", "Small"))
+)
+
+ggplot(family_size_data, aes(x = Size, fill = Type)) +
+  geom_histogram(bins = 20, alpha = 0.7) +
+  labs(
+    title = "Distribution of Gene Family Sizes",
+    x = "Number of Genes per Family",
+    y = "Number of Families"
+  ) +
+  theme_minimal() +
+  scale_fill_manual(values = c("Small" = "lightblue", 
+                               "Medium" = "orange", 
+                               "Large" = "red"))
+```
+
+### Family vs Gene-Level Comparison
+
+```{r fig.width=8, fig.height=6}
+# Compare family-level with gene-level results
+gene_results <- analyze_genes(
+  counts = example_counts,
+  metadata = example_metadata,
+  design = ~ condition,
+  contrast = c("condition", "treated", "control")
+)
+
+# Get significant counts
+gene_sig <- sum(gene_results$results$padj < 0.05, na.rm = TRUE)
+family_sig <- sum(family_results$results$padj < 0.05, na.rm = TRUE)
+
+comparison_df <- data.frame(
+  Level = c("Gene", "Family"),
+  Significant = c(gene_sig, family_sig),
+  Total = c(nrow(gene_results$results), nrow(family_results$results))
+)
+
+comparison_df$Percentage <- 100 * comparison_df$Significant / comparison_df$Total
+
+ggplot(comparison_df, aes(x = Level, y = Percentage, fill = Level)) +
+  geom_col(alpha = 0.7) +
+  geom_text(aes(label = paste0(Significant, "/", Total)), 
+            vjust = -0.5) +
+  labs(
+    title = "Significant Features by Analysis Level",
+    x = "Analysis Level",
+    y = "Percentage Significant",
+    fill = "Level"
+  ) +
+  theme_minimal() +
+  ylim(0, max(comparison_df$Percentage) * 1.2)
+```
+
+## Interpretation and Biological Insights
+
+### Identifying Coordinated Families
+
+```{r}
+# Find families with strong coordinated responses
+strong_response <- family_results$results %>%
+  filter(padj < 0.01, abs(log2FoldChange) > 1) %>%
+  arrange(desc(abs(log2FoldChange)))
+
+if (nrow(strong_response) > 0) {
+  cat("Families with strong coordinated responses:\n")
+  print(strong_response[, c("family", "n_genes", "log2FoldChange", "padj")])
+} else {
+  cat("No families show strong coordinated responses in this example\n")
+}
+```
+
+### Family Functional Categories
+
+```{r}
+# Categorize families by function
+functional_categories <- data.frame(
+  Family = names(hgnc_families),
+  Category = c(
+    rep("Protein Synthesis", 2),  # Ribosomal proteins
+    rep("Stress Response", 2),    # Heat shock proteins
+    rep("Immune System", 2),      # Immunoglobulins
+    rep("Chromatin", 5),          # Histones
+    rep("Metal Binding", 1),      # Metallothioneins
+    rep("Metabolism", 1),         # Cytochromes
+    rep("Cytoskeleton", 2)        # Keratins
+  )
+)
+
+# Analyze by category
+family_results_with_category <- family_results$results %>%
+  left_join(functional_categories, by = c("family" = "Family"))
+
+category_summary <- family_results_with_category %>%
+  group_by(Category) %>%
+  summarise(
+    N_Families = n(),
+    N_Significant = sum(padj < 0.05, na.rm = TRUE),
+    Mean_LFC = mean(abs(log2FoldChange), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(category_summary)
+```
+
+## Best Practices
+
+### Family Definition
+
+1. **Use established families**: HGNC provides authoritative classifications
+2. **Consider functional relevance**: Group genes with similar functions
+3. **Optimal family size**: 3-50 genes per family works well
+4. **Avoid overlaps**: Minimize gene assignment to multiple families
+
+### Method Selection
+
+1. **Mean aggregation**: Good for detecting overall family activity
+2. **Median aggregation**: More robust to outliers
+3. **Sum aggregation**: Appropriate for count-like interpretations
+4. **Consider data characteristics**: Choose based on expression patterns
+
+### Statistical Considerations
+
+1. **Multiple testing**: Family analysis reduces testing burden
+2. **Power analysis**: Fewer tests can increase detection power
+3. **Effect sizes**: Consider biological significance, not just statistical
+4. **Validation**: Confirm family-level findings with gene-level analysis
+
+### Interpretation Guidelines
+
+1. **Biological context**: Consider known family functions
+2. **Expression patterns**: Look for coordinated vs. divergent regulation
+3. **Literature support**: Check for known family responses
+4. **Experimental validation**: Design follow-up experiments
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Low gene coverage**: Ensure gene identifiers match between data and families
+2. **Empty families**: Check minimum family size requirements
+3. **No significant results**: Consider relaxing thresholds or different methods
+4. **Conflicting directions**: May indicate family heterogeneity
+
+### Quality Control
+
+```{r}
+# Check family composition in your data
+family_qc <- lapply(hgnc_families, function(family) {
+  available <- intersect(family, rownames(example_counts))
+  list(
+    total_genes = length(family),
+    available_genes = length(available),
+    coverage = length(available) / length(family),
+    genes = available
+  )
+})
+
+# Families with good coverage
+good_coverage <- sapply(family_qc, function(x) x$coverage >= 0.5)
+cat("Families with >50% gene coverage:", sum(good_coverage), "\n")
+```
+
+## Session Information
+
+```{r}
+sessionInfo()
+```
