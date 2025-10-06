@@ -3,10 +3,10 @@
 > **Fun**ctional **D**ifferential **E**xpression Analysis
 
 <!-- badges: start -->
-[![R-CMD-check](https://github.com/yourusername/funDE/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/yourusername/funDE/actions/workflows/R-CMD-check.yaml)
-[![Codecov](https://codecov.io/gh/yourusername/funDE/branch/main/graph/badge.svg)](https://app.codecov.io/gh/yourusername/funDE)
+[![R-CMD-check](https://github.com/guokai8/funDE/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/guokai8/funDE/actions/workflows/R-CMD-check.yaml)
+[![Codecov](https://codecov.io/gh/guokai8/funDE/branch/main/graph/badge.svg)](https://app.codecov.io/gh/guokai8/funDE)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
+
 <!-- badges: end -->
 
 ## Overview
@@ -34,7 +34,7 @@ Traditional gene-level analysis can miss important biology:
 ```r
 # Install from GitHub
 install.packages("devtools")
-devtools::install_github("yourusername/funDE")
+devtools::install_github("guokai8/funDE")
 
 # Install Bioconductor dependencies
 if (!requireNamespace("BiocManager", quietly = TRUE))
